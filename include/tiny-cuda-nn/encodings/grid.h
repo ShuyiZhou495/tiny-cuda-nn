@@ -91,14 +91,14 @@ __global__ void kernel_grid(
 		return;
 	}
 
-	grid += offset_table.data[level] * N_FEATURES_PER_LEVEL;
+	grid += offset_table.data[level] * N_FEATURES_PER_LEVEL; // add to pointer
 	const uint32_t hashmap_size = offset_table.data[level + 1] - offset_table.data[level];
 
 	const float scale = grid_scale(level, log2_per_level_scale, base_resolution);
 	const uint32_t resolution = grid_resolution(scale);
 
-	float pos[N_POS_DIMS];
-	float pos_derivative[N_POS_DIMS];
+	float pos[N_POS_DIMS]; // 3
+	float pos_derivative[N_POS_DIMS]; // 3
 	uvec<N_POS_DIMS> pos_grid;
 
 	if (interpolation_type == InterpolationType::Nearest || interpolation_type == InterpolationType::Linear) {
@@ -176,7 +176,7 @@ __global__ void kernel_grid(
 		for (uint32_t grad_dim = 0; grad_dim < N_POS_DIMS; ++grad_dim) {
 			TCNN_PRAGMA_UNROLL
 			for (uint32_t idx = 0; idx < (1 << (N_POS_DIMS-1)); ++idx) {
-				float weight = scale;
+				float weight = 1;
 				uvec<N_POS_DIMS> pos_grid_local;
 
 				TCNN_PRAGMA_UNROLL
@@ -191,7 +191,8 @@ __global__ void kernel_grid(
 						pos_grid_local[dim] = pos_grid[dim] + 1;
 					}
 				}
-
+				float sin_weight_left = fmaf(2 * PI, __sinf(PI * weight *(1 - pos[grad_dim])), 1);
+				float sin_weight_right = fmaf(2 * PI, __sinf(PI * weight * pos[grad_dim]), 1); // use lambda as 4
 				pos_grid_local[grad_dim] = pos_grid[grad_dim];
 				auto val_left = grid_val(pos_grid_local);
 				pos_grid_local[grad_dim] = pos_grid[grad_dim] + 1;
@@ -199,7 +200,7 @@ __global__ void kernel_grid(
 
 				TCNN_PRAGMA_UNROLL
 				for (uint32_t feature = 0; feature < N_FEATURES_PER_LEVEL; ++feature) {
-					grads[feature][grad_dim] += weight * ((float)val_right[feature] - (float)val_left[feature]) * pos_derivative[grad_dim];
+					grads[feature][grad_dim] += scale * weight * ((float)val_right[feature] * sin_weight_right - (float)val_left[feature] * sin_weight_left) * pos_derivative[grad_dim];
 				}
 			}
 		}
@@ -666,13 +667,13 @@ public:
 #endif
 
 	GridEncodingTemplated(
-		uint32_t n_features,
-		uint32_t log2_hashmap_size,
-		uint32_t base_resolution,
-		float per_level_scale,
+		uint32_t n_features, // 32
+		uint32_t log2_hashmap_size, // 19
+		uint32_t base_resolution, // 16
+		float per_level_scale, // 16->1024, exponential factor
 		bool stochastic_interpolation,
-		InterpolationType interpolation_type,
-		GridType grid_type
+		InterpolationType interpolation_type, // Linear
+		GridType grid_type 
 	) :
 	m_n_features{n_features},
 	m_log2_hashmap_size{log2_hashmap_size},
@@ -682,7 +683,7 @@ public:
 	m_interpolation_type{interpolation_type},
 	m_grid_type{grid_type}
 	{
-		m_n_levels = div_round_up(m_n_features, N_FEATURES_PER_LEVEL);
+		m_n_levels = div_round_up(m_n_features, N_FEATURES_PER_LEVEL); // 16
 		uint32_t offset = 0;
 
 		if (m_n_levels > MAX_N_LEVELS) {
@@ -694,6 +695,7 @@ public:
 			const uint32_t resolution = grid_resolution(grid_scale(i, std::log2(per_level_scale), base_resolution));
 
 			uint32_t max_params = std::numeric_limits<uint32_t>::max()/2;
+			// N_POS_DIMS=3
 			uint32_t params_in_level = std::pow((float)resolution, N_POS_DIMS) > (float)max_params ? max_params : powi(resolution, N_POS_DIMS);
 
 			// Make sure memory accesses will be aligned
@@ -722,7 +724,7 @@ public:
 
 		m_n_params = m_offset_table.data[m_n_levels] * N_FEATURES_PER_LEVEL;
 
-		m_n_output_dims = m_n_features;
+		m_n_output_dims = m_n_features; // 32
 
 		if (n_features % N_FEATURES_PER_LEVEL != 0) {
 			throw std::runtime_error{fmt::format("GridEncoding: n_features={} must be a multiple of N_FEATURES_PER_LEVEL={}", n_features, N_FEATURES_PER_LEVEL)};
@@ -1096,6 +1098,10 @@ public:
 	}
 
 	json hyperparams() const override {
+		json offset_table = json::array();
+		for (auto i = 0; i < m_offset_table.size; ++i) {
+        	offset_table.push_back(m_offset_table.data[i] * N_FEATURES_PER_LEVEL);
+    	}
 		json result = {
 			{"otype", "Grid"},
 			{"type", to_string(m_grid_type)},
@@ -1105,6 +1111,7 @@ public:
 			{"per_level_scale", m_per_level_scale},
 			{"interpolation", to_string(m_interpolation_type)},
 			{"hash", to_string(HASH_TYPE)},
+			{"offset_table", offset_table}
 		};
 
 		if (m_grid_type == GridType::Hash) {

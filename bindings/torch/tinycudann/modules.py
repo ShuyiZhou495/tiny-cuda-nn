@@ -167,11 +167,14 @@ class Module(torch.nn.Module):
 		self.dtype = _torch_precision(self.native_tcnn_module.param_precision())
 
 		self.seed = seed
+		self.register(seed)
+
+		self.loss_scale = _C.default_loss_scale(self.native_tcnn_module.param_precision())
+
+	def register(self, seed):
 		initial_params = self.native_tcnn_module.initial_params(seed)
 		self.params = torch.nn.Parameter(initial_params, requires_grad=True)
 		self.register_parameter(name="params", param=self.params)
-
-		self.loss_scale = _C.default_loss_scale(self.native_tcnn_module.param_precision())
 
 	def forward(self, x):
 		if not x.is_cuda:
@@ -324,6 +327,34 @@ class Encoding(Module):
 		super(Encoding, self).__init__(seed=seed)
 
 		self.n_output_dims = self.native_tcnn_module.n_output_dims()
+		self.offset_table = self.native_tcnn_module.hyperparams()["offset_table"]
+
+	def register(self, seed):
+		initial_params = self.native_tcnn_module.initial_params(seed)
+		self.offset_table = self.native_tcnn_module.hyperparams()["offset_table"]
+		for i, n in enumerate(zip(self.offset_table[:-1], self.offset_table[1:])):
+			n1, n2 = n
+			self.register_parameter(name=f"params{i}", 
+						   param=torch.nn.Parameter(initial_params[n1: n2], requires_grad=True))
+		self.params = list(self.parameters())
 
 	def _native_tcnn_module(self):
 		return _C.create_encoding(self.n_input_dims, self.encoding_config, self.precision)
+
+	def forward(self, x):
+		if not x.is_cuda:
+			warnings.warn("input must be a CUDA tensor, but isn't. This indicates suboptimal performance.")
+			x = x.cuda()
+
+		batch_size = x.shape[0]
+		batch_size_granularity = int(_C.batch_size_granularity())
+		padded_batch_size = (batch_size + batch_size_granularity-1) // batch_size_granularity * batch_size_granularity
+
+		x_padded = x if batch_size == padded_batch_size else torch.nn.functional.pad(x, [0, 0, 0, padded_batch_size - batch_size])
+		output = _module_function.apply(
+			self.native_tcnn_module,
+			x_padded.to(torch.float).contiguous(),
+			torch.cat(self.params).to(_torch_precision(self.native_tcnn_module.param_precision())).contiguous(),
+			self.loss_scale
+		)
+		return output[:batch_size, :self.n_output_dims]
