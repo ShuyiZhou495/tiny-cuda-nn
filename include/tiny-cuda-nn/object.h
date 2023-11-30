@@ -182,6 +182,7 @@ public:
 		cudaStream_t stream,
 		const GPUMatrixDynamic<T>& input,
 		GPUMatrixDynamic<COMPUTE_T>* output = nullptr,
+		GPUMatrixDynamic<COMPUTE_T>* dy_dx = nullptr,
 		bool use_inference_params = false,
 		bool prepare_input_gradients = false
 	) = 0;
@@ -189,6 +190,7 @@ public:
 		cudaStream_t stream,
 		const GPUMatrixDynamic<T>& input,
 		GPUMatrixDynamic<COMPUTE_T>* output = nullptr,
+		GPUMatrixDynamic<COMPUTE_T>* dy_dx = nullptr,
 		bool use_inference_params = false,
 		bool prepare_input_gradients = false
 	) {
@@ -205,7 +207,7 @@ public:
 			}
 		}
 
-		return forward_impl(stream, input, output, use_inference_params, prepare_input_gradients);
+		return forward_impl(stream, input, output, dy_dx, use_inference_params, prepare_input_gradients);
 	}
 	std::unique_ptr<Context> forward(
 		const GPUMatrixDynamic<T>& input,
@@ -219,6 +221,7 @@ public:
 	virtual void backward_impl(
 		cudaStream_t stream,
 		const Context& ctx,
+		const float progress,
 		const GPUMatrixDynamic<T>& input,
 		const GPUMatrixDynamic<COMPUTE_T>& output,
 		const GPUMatrixDynamic<COMPUTE_T>& dL_doutput,
@@ -229,6 +232,7 @@ public:
 	void backward(
 		cudaStream_t stream,
 		const Context& ctx,
+		const float progress,
 		const GPUMatrixDynamic<T>& input,
 		const GPUMatrixDynamic<COMPUTE_T>& output,
 		const GPUMatrixDynamic<COMPUTE_T>& dL_doutput,
@@ -261,7 +265,7 @@ public:
 			}
 		}
 
-		backward_impl(stream, ctx, input, output, dL_doutput, dL_dinput, use_inference_params, param_gradients_mode);
+		backward_impl(stream, ctx, progress, input, output, dL_doutput, dL_dinput, use_inference_params, param_gradients_mode);
 	}
 	void backward(
 		const Context& ctx,

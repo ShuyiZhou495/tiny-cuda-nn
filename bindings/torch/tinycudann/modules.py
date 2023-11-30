@@ -114,8 +114,39 @@ class _module_function(torch.autograd.Function):
 
 		input, params, output = ctx.saved_tensors
 		input_grad, params_grad = _module_function_backward.apply(ctx, doutput, input, params, output)
-
 		return None, null_tensor_to_none(input_grad), null_tensor_to_none(params_grad), None
+
+class _module_function_c(torch.autograd.Function):
+	@staticmethod
+	def forward(ctx, native_tcnn_module, input, params, loss_scale, progress):
+		# If no output gradient is provided, no need to
+		# automatically materialize it as torch.zeros.
+		ctx.set_materialize_grads(False)
+
+		native_ctx, output, dy_dx = native_tcnn_module.fwd(input, params)
+		ctx.save_for_backward(input, params, output, dy_dx)
+		ctx.native_tcnn_module = native_tcnn_module
+		ctx.native_ctx = native_ctx
+		ctx.loss_scale = loss_scale
+		ctx.progress = progress
+
+		return output, dy_dx
+
+	@staticmethod
+	def backward(ctx, doutput, _):
+		if doutput is None:
+			return None, None, None, None, None
+
+		if not doutput.is_cuda:
+			warnings.warn("doutput must be a CUDA tensor, but isn't. This indicates suboptimal performance.")
+			doutput = doutput.cuda()
+
+		input, params, output, dy_dx = ctx.saved_tensors
+		input_grad, params_grad = _module_function_backward.apply(ctx, doutput, input, params, output)
+		p = ctx.progress
+		od = doutput.shape[-1]
+		self_input_grad = (doutput[..., :p, None] * dy_dx.view(-1, od, 3)[:, :p, :] ).sum(-2)
+		return None, null_tensor_to_none(self_input_grad), null_tensor_to_none(params_grad), None, None
 
 class _module_function_backward(torch.autograd.Function):
 	@staticmethod
@@ -123,10 +154,13 @@ class _module_function_backward(torch.autograd.Function):
 		ctx.ctx_fwd = ctx_fwd
 		ctx.save_for_backward(input, params, doutput)
 		with torch.no_grad():
+			progress = ctx_fwd.progress
 			scaled_grad = doutput * ctx_fwd.loss_scale
-			input_grad, params_grad = ctx_fwd.native_tcnn_module.bwd(ctx_fwd.native_ctx, input, params, output, scaled_grad)
+			input_grad, params_grad = ctx_fwd.native_tcnn_module.bwd(ctx_fwd.native_ctx, input, params, output, scaled_grad, progress)
 			input_grad = null_tensor_like(input) if input_grad is None else (input_grad / ctx_fwd.loss_scale)
 			params_grad = null_tensor_like(params) if params_grad is None else (params_grad / ctx_fwd.loss_scale)
+
+
 		return input_grad, params_grad
 
 	@staticmethod
@@ -341,7 +375,7 @@ class Encoding(Module):
 	def _native_tcnn_module(self):
 		return _C.create_encoding(self.n_input_dims, self.encoding_config, self.precision)
 
-	def forward(self, x):
+	def forward(self, x, progress):
 		if not x.is_cuda:
 			warnings.warn("input must be a CUDA tensor, but isn't. This indicates suboptimal performance.")
 			x = x.cuda()
@@ -351,10 +385,11 @@ class Encoding(Module):
 		padded_batch_size = (batch_size + batch_size_granularity-1) // batch_size_granularity * batch_size_granularity
 
 		x_padded = x if batch_size == padded_batch_size else torch.nn.functional.pad(x, [0, 0, 0, padded_batch_size - batch_size])
-		output = _module_function.apply(
+		output, dy_dx = _module_function_c.apply(
 			self.native_tcnn_module,
 			x_padded.to(torch.float).contiguous(),
 			torch.cat(self.params).to(_torch_precision(self.native_tcnn_module.param_precision())).contiguous(),
-			self.loss_scale
+			self.loss_scale,
+			progress
 		)
-		return output[:batch_size, :self.n_output_dims]
+		return output[:batch_size, :self.n_output_dims], dy_dx[:batch_size]

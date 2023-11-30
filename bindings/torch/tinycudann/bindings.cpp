@@ -76,7 +76,7 @@ class Module {
 public:
 	Module(tcnn::cpp::Module* module) : m_module{module} {}
 
-	std::tuple<tcnn::cpp::Context, torch::Tensor> fwd(torch::Tensor input, torch::Tensor params) {
+	std::tuple<tcnn::cpp::Context, torch::Tensor, torch::Tensor> fwd(torch::Tensor input, torch::Tensor params) {
 		CHECK_INPUT(input);
 		CHECK_INPUT(params);
 
@@ -98,18 +98,19 @@ public:
 		uint32_t batch_size = input.size(0);
 
 		torch::Tensor output = torch::empty({ batch_size, n_output_dims() }, torch::TensorOptions().dtype(c10_output_precision()).device(device));
+		torch::Tensor dy_dx = torch::empty({ batch_size, n_output_dims() * n_input_dims()}, torch::TensorOptions().dtype(c10_output_precision()).device(device));
 
 		tcnn::cpp::Context ctx;
 		if (!input.requires_grad() && !params.requires_grad()) {
 			m_module->inference(stream, batch_size, input.data_ptr<float>(), void_data_ptr(output), void_data_ptr(params));
 		} else {
-			ctx = m_module->forward(stream, batch_size, input.data_ptr<float>(), void_data_ptr(output), void_data_ptr(params), input.requires_grad());
+			ctx = m_module->forward(stream, batch_size, input.data_ptr<float>(), void_data_ptr(output), void_data_ptr(dy_dx),void_data_ptr(params), input.requires_grad());
 		}
 
-		return { std::move(ctx), output };
+		return { std::move(ctx), output, dy_dx};
 	}
 
-	std::tuple<torch::Tensor, torch::Tensor> bwd(const tcnn::cpp::Context& ctx, torch::Tensor input, torch::Tensor params, torch::Tensor output, torch::Tensor dL_doutput) {
+	std::tuple<torch::Tensor, torch::Tensor> bwd(const tcnn::cpp::Context& ctx, torch::Tensor input, torch::Tensor params, torch::Tensor output, torch::Tensor dL_doutput, const float progress) {
 		if (!ctx.ctx) {
 			throw std::runtime_error{"Module::bwd: called with invalid context. fwd likely (mistakenly) ran in inference mode."};
 		}
@@ -158,6 +159,7 @@ public:
 				stream,
 				ctx,
 				batch_size,
+				progress,
 				input.requires_grad() ? dL_dinput.data_ptr<float>() : nullptr,
 				void_data_ptr(dL_doutput),
 				params.requires_grad() ? void_data_ptr(dL_dparams) : nullptr,

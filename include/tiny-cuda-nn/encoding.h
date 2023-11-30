@@ -47,7 +47,7 @@ public:
 		GPUMatrixDynamic<T>& output,
 		bool use_inference_params = true
 	) override {
-		this->forward(stream, input, &output, use_inference_params, false);
+		this->forward(stream, input, &output, nullptr, use_inference_params, false);
 	}
 
 	virtual void set_padded_output_width(uint32_t padded_output_width) = 0;

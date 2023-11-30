@@ -81,19 +81,19 @@ public:
 		m_model->inference_mixed_precision(synced_stream.get(1), input_matrix, output_matrix);
 	}
 
-	Context forward(cudaStream_t stream, uint32_t n_elements, const float* input, void* output, void* params, bool prepare_input_gradients) override {
+	Context forward(cudaStream_t stream, uint32_t n_elements, const float* input, void* output, void* dy_dx, void* params, bool prepare_input_gradients) override {
 		m_model->set_params((T*)params, (T*)params, nullptr);
 
 		GPUMatrix<float, MatrixLayout::ColumnMajor> input_matrix((float*)input, m_model->input_width(), n_elements);
 		GPUMatrix<T, MatrixLayout::ColumnMajor> output_matrix((T*)output, m_model->padded_output_width(), n_elements);
-
+		GPUMatrix<T, MatrixLayout::ColumnMajor> dy_dx_matrix((T*)dy_dx, m_model->padded_output_width() * m_model->input_width(), n_elements);
 		// Run on our own custom stream to ensure CUDA graph capture is possible.
 		// (Significant possible speedup.)
 		SyncedMultiStream synced_stream{stream, 2};
-		return { m_model->forward(synced_stream.get(1), input_matrix, &output_matrix, false, prepare_input_gradients) };
+		return { m_model->forward(synced_stream.get(1), input_matrix, &output_matrix, &dy_dx_matrix, false, prepare_input_gradients) };
 	}
 
-	void backward(cudaStream_t stream, const Context& ctx, uint32_t n_elements, float* dL_dinput, const void* dL_doutput, void* dL_dparams, const float* input, const void* output, const void* params) override {
+	void backward(cudaStream_t stream, const Context& ctx, uint32_t n_elements, const float progress, float* dL_dinput, const void* dL_doutput, void* dL_dparams, const float* input, const void* output, const void* params) override {
 		m_model->set_params((T*)params, (T*)params, (T*)dL_dparams);
 
 		GPUMatrix<float, MatrixLayout::ColumnMajor> input_matrix((float*)input, m_model->input_width(), n_elements);
@@ -105,7 +105,7 @@ public:
 		// Run on our own custom stream to ensure CUDA graph capture is possible.
 		// (Significant possible speedup.)
 		SyncedMultiStream synced_stream{stream, 2};
-		m_model->backward(synced_stream.get(1), *ctx.ctx, input_matrix, output_matrix, dL_doutput_matrix, dL_dinput ? &dL_dinput_matrix : nullptr, false, dL_dparams ? GradientMode::Overwrite : GradientMode::Ignore);
+		m_model->backward(synced_stream.get(1),  *ctx.ctx, progress, input_matrix, output_matrix, dL_doutput_matrix, dL_dinput ? &dL_dinput_matrix : nullptr, false, dL_dparams ? GradientMode::Overwrite : GradientMode::Ignore);
 	}
 
 	void backward_backward_input(cudaStream_t stream, const Context& ctx, uint32_t n_elements, const float* dL_ddLdinput, const float* input, const void* dL_doutput, void* dL_dparams, void* dL_ddLdoutput, float* dL_dinput, const void* params) override {

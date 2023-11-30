@@ -735,6 +735,7 @@ public:
 		cudaStream_t stream,
 		const GPUMatrixDynamic<float>& input,
 		GPUMatrixDynamic<T>* output = nullptr,
+		GPUMatrixDynamic<T>* dy_dx = nullptr,
 		bool use_inference_params = false,
 		bool prepare_input_gradients = false
 	) override {
@@ -804,13 +805,23 @@ public:
 				output->pitched_ptr()
 			);
 		}
-
+		if (dy_dx && dy_dx->layout() == AoS) {
+			const dim3 threads_transpose = { m_n_levels * N_FEATURES_PER_LEVEL, 8, 1 };
+			const uint32_t blocks_transpose = div_round_up(num_elements, threads_transpose.y);
+			transpose_gradients2<T><<<blocks_transpose, threads_transpose, 0, synced_streams.get(0)>>>(
+				num_elements,
+				N_POS_DIMS,
+				(T*)forward->dy_dx.data(),
+				dy_dx->pitched_ptr()
+			);
+		}
 		return forward;
 	}
 
 	void backward_impl(
 		cudaStream_t stream,
 		const Context& ctx,
+		const float progress,
 		const GPUMatrixDynamic<float>& input,
 		const GPUMatrixDynamic<T>& output,
 		const GPUMatrixDynamic<T>& dL_doutput,
@@ -891,6 +902,8 @@ public:
 		if (!dL_dinput) {
 			return;
 		}
+
+		const uint32_t levels = (uint32_t) (progress * m_n_levels);
 
 		linear_kernel(kernel_grid_backward_input<T, N_POS_DIMS>, 0, stream,
 			num_elements,

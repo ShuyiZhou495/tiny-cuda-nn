@@ -67,6 +67,54 @@ __global__ void transpose_encoded_position(
 }
 
 template <typename T>
+__global__ void transpose_gradients2(
+	const uint32_t n_elements,
+	const uint32_t N_POS_DIMS,
+	const T* __restrict__ dy_dx,
+	PitchedPtr<T> odydx
+) {
+	const uint32_t i = threadIdx.y + blockIdx.x * blockDim.y;
+	if (i >= n_elements) return;
+
+	const uint32_t elem_idx = i;
+	const uint32_t dim_idx = threadIdx.x;
+	TCNN_PRAGMA_UNROLL
+	for (uint32_t d = 0; d < N_POS_DIMS; ++d) {
+		odydx(elem_idx)[dim_idx * N_POS_DIMS + d] = ((vec<3>*)dy_dx)[i + dim_idx * n_elements][d];
+	}
+}
+
+template <typename T>
+__global__ void copy_dy_dx(
+	const uint32_t n_elements,
+	const T* __restrict__ dy_dx,
+	tcnn::GPUMatrixDynamic<float> * odydx
+) {
+	const uint32_t i = threadIdx.y + blockIdx.x * blockDim.y;
+	if (i >= n_elements) return;
+
+	const uint32_t elem_idx = i;
+	const uint32_t dim_idx = threadIdx.x;
+
+	((vec<3>*)(odydx->data()))[i + dim_idx * n_elements] = ((vec<3>*)dy_dx)[i + dim_idx * n_elements];
+}
+
+template <typename T>
+__global__ void copy_dL_dinput(
+	const uint32_t n_elements,
+	const T* __restrict__ dy_dx,
+	tcnn::GPUMatrixDynamic<float> * odydx
+) {
+	const uint32_t i = threadIdx.y + blockIdx.x * blockDim.y;
+	if (i >= n_elements) return;
+
+	const uint32_t elem_idx = i;
+	const uint32_t dim_idx = threadIdx.x;
+
+	(odydx->data())[elem_idx * n_elements + dim_idx] = dy_dx[elem_idx * n_elements + dim_idx];
+}
+
+template <typename T>
 __global__ void transpose_gradients(
 	const uint32_t n_elements,
 	T* __restrict__ transposed_dL_dy,
@@ -80,6 +128,7 @@ __global__ void transpose_gradients(
 
 	transposed_dL_dy[elem_idx + n_elements * dim_idx] = dL_dy(elem_idx)[dim_idx];
 }
+
 
 static constexpr uint32_t MAX_N_LEVELS = 128;
 struct GridOffsetTable {
