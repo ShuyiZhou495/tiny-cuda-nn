@@ -191,6 +191,8 @@ __global__ void kernel_grid(
 						pos_grid_local[dim] = pos_grid[dim] + 1;
 					}
 				}
+				float sin_weight_left = fmaf(2 * PI, __sinf(PI * weight *(1 - pos[grad_dim])), 1);
+				float sin_weight_right = fmaf(2 * PI, __sinf(PI * weight * pos[grad_dim]), 1); // use lambda as 4
 				pos_grid_local[grad_dim] = pos_grid[grad_dim];
 				auto val_left = grid_val(pos_grid_local);
 				pos_grid_local[grad_dim] = pos_grid[grad_dim] + 1;
@@ -198,7 +200,8 @@ __global__ void kernel_grid(
 
 				TCNN_PRAGMA_UNROLL
 				for (uint32_t feature = 0; feature < N_FEATURES_PER_LEVEL; ++feature) {
-					grads[feature][grad_dim] += weight * ((float)val_right[feature] - (float)val_left[feature]) * pos_derivative[grad_dim];
+					grads[feature][grad_dim] += scale * weight * ((float)val_right[feature] * sin_weight_right - (float)val_left[feature] * sin_weight_left) * pos_derivative[grad_dim];
+					// grads[feature][grad_dim] += weight * ((float)val_right[feature] - (float)val_left[feature]) * pos_derivative[grad_dim];
 				}
 			}
 		}
